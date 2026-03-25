@@ -1,107 +1,84 @@
 import sqlite3
-import os
+import pandas as pd
 
 DB_NAME = "fortune.db"
 
-def get_connection():
-    """Établit et retourne une connexion à la base de données SQLite."""
-    conn = sqlite3.connect(DB_NAME)
-    # Permet de renvoyer les requêtes sous forme de dictionnaires plutôt que de simples tuples
-    conn.row_factory = sqlite3.Row 
-    return conn
+def init_db():
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("CREATE TABLE IF NOT EXISTS comptes (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT, type_compte TEXT, solde_initial REAL)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT UNIQUE, parent_id INTEGER, FOREIGN KEY(parent_id) REFERENCES categories(id))")
+        cursor.execute("CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, compte_id INTEGER, date TEXT, libelle TEXT, montant REAL, categorie_id INTEGER, FOREIGN KEY(compte_id) REFERENCES comptes(id), FOREIGN KEY(categorie_id) REFERENCES categories(id))")
+        cursor.execute("CREATE TABLE IF NOT EXISTS config (cle TEXT PRIMARY KEY, valeur TEXT)")
+        
+        # Tables pour l'architecture des sous-comptes virtuels
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS enveloppes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nom TEXT UNIQUE,
+                compte_id INTEGER,
+                objectif REAL,
+                FOREIGN KEY(compte_id) REFERENCES comptes(id)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS provisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                enveloppe_id INTEGER,
+                date TEXT,
+                montant REAL,
+                FOREIGN KEY(enveloppe_id) REFERENCES enveloppes(id)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS regles_recurrentes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                enveloppe_id INTEGER,
+                montant REAL,
+                prochaine_date TEXT,
+                FOREIGN KEY(enveloppe_id) REFERENCES enveloppes(id)
+            )
+        """)
 
-def initialiser_base_de_donnees():
-    """Crée les tables de la base de données si elles n'existent pas encore."""
-    print(f"Initialisation de l'architecture de {DB_NAME}...")
-    conn = get_connection()
-    cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM categories")
+        if cursor.fetchone()[0] == 0:
+            default_cats = {
+                "REVENUS": ["Salaire", "Retraite", "Dividendes", "Ventes/Extras"],
+                "LOGEMENT": ["Loyer/Prêt", "Charges/Énergie", "Travaux", "Assurance Habitation"],
+                "ALIMENTATION": ["Courses", "Restaurants/Bars", "Cafétéria"],
+                "TRANSPORT": ["Carburant", "Entretien Véhicule", "Transports en commun", "Assurance Auto"],
+                "LOISIRS": ["Abonnements", "Sorties/Culture", "Voyages/Vacances", "Sport"],
+                "SANTÉ": ["Pharmacie/Médecin", "Mutuelle"],
+                "IMPÔTS": ["Impôt sur le revenu", "Taxes Locales"]
+            }
+            for parent, subs in default_cats.items():
+                cursor.execute("INSERT INTO categories (nom, parent_id) VALUES (?, NULL)", (parent,))
+                p_id = cursor.lastrowid
+                for sub in subs:
+                    cursor.execute("INSERT INTO categories (nom, parent_id) VALUES (?, ?)", (sub, p_id))
+        conn.commit()
 
-    # Table des Catégories (Le plan comptable)
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS categories (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nom TEXT NOT NULL UNIQUE,
-        type_flux TEXT NOT NULL CHECK(type_flux IN ('Revenu', 'Depense', 'Transfert')),
-        mots_cles TEXT -- Mots-clés séparés par des virgules pour le ciblage auto
-    )
-    ''')
+def get_data(query, params=()):
+    with sqlite3.connect(DB_NAME) as conn:
+        return pd.read_sql_query(query, conn, params=params)
 
-    # Table des Comptes physiques
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS comptes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nom TEXT NOT NULL UNIQUE,
-        type_compte TEXT NOT NULL, -- Courant, Epargne, Bourse, etc.
-        solde_initial REAL DEFAULT 0.0
-    )
-    ''')
-
-    # Table des Sous-comptes virtuels (Enveloppes fléchées)
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS sous_comptes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        compte_parent_id INTEGER NOT NULL,
-        nom TEXT NOT NULL,
-        cible_epargne REAL DEFAULT 0.0,
-        FOREIGN KEY (compte_parent_id) REFERENCES comptes(id)
-    )
-    ''')
-
-    # Table des Crédits (Passifs)
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS credits (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nom TEXT NOT NULL UNIQUE,
-        capital_emprunte REAL NOT NULL,
-        taux_interet REAL NOT NULL,
-        mensualite REAL NOT NULL,
-        assurance REAL DEFAULT 0.0,
-        date_debut DATE,
-        duree_mois INTEGER NOT NULL
-    )
-    ''')
-
-    # Table centrale des Transactions
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS transactions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        compte_id INTEGER NOT NULL,
-        categorie_id INTEGER,
-        date DATE NOT NULL,
-        libelle TEXT NOT NULL,
-        montant REAL NOT NULL,
-        pointe BOOLEAN DEFAULT 0, -- 0 = non pointé, 1 = pointé
-        notes TEXT,
-        FOREIGN KEY (compte_id) REFERENCES comptes(id),
-        FOREIGN KEY (categorie_id) REFERENCES categories(id)
-    )
-    ''')
-
-    conn.commit()
-    
-    # Injection des catégories de base pour éviter de démarrer à blanc
-    categories_base = [
-        ('Salaire', 'Revenu', 'VIREMENT SALAIRE, SALAIRE'),
-        ('Alimentation', 'Depense', 'CARREFOUR, LECLERC, AUCHAN, LIDL, ASUKA'),
-        ('Logement', 'Depense', 'LOYER, EDF, ENGIE, EAU, ASSURANCE HABITATION'),
-        ('Transport', 'Depense', 'SNCF, TOTAL, ESSO, UBER, PEAGE'),
-        ('Abonnements', 'Depense', 'NETFLIX, SPOTIFY, FREE, ORANGE, BOUYGUES'),
-        ('Virement Interne', 'Transfert', 'VIREMENT COMPTE, VIR SEPA')
-    ]
-    
-    for nom, type_flux, mots_cles in categories_base:
+def execute_query(query, params=()):
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
         try:
-            cursor.execute('''
-            INSERT INTO categories (nom, type_flux, mots_cles) 
-            VALUES (?, ?, ?)
-            ''', (nom, type_flux, mots_cles))
-        except sqlite3.IntegrityError:
-            # La catégorie existe déjà, on ignore
-            pass
+            cursor.execute(query, params)
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Erreur SQL : {e}")
+            return False
 
-    conn.commit()
-    conn.close()
-    print("Base de données 'Fortune' opérationnelle.")
+def get_config(key):
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT valeur FROM config WHERE cle = ?", (key,))
+        res = cursor.fetchone()
+        return res[0] if res else None
 
-if __name__ == "__main__":
-    initialiser_base_de_donnees()
+def set_config(key, value):
+    execute_query("INSERT OR REPLACE INTO config (cle, valeur) VALUES (?, ?)", (key, value))
