@@ -8,35 +8,30 @@ def init_db():
         cursor = conn.cursor()
         cursor.execute("CREATE TABLE IF NOT EXISTS comptes (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT, type_compte TEXT, solde_initial REAL)")
         cursor.execute("CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT UNIQUE, parent_id INTEGER, FOREIGN KEY(parent_id) REFERENCES categories(id))")
-        cursor.execute("CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, compte_id INTEGER, date TEXT, libelle TEXT, montant REAL, categorie_id INTEGER, FOREIGN KEY(compte_id) REFERENCES comptes(id), FOREIGN KEY(categorie_id) REFERENCES categories(id))")
+        cursor.execute("CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, compte_id INTEGER, date TEXT, libelle TEXT, montant REAL, categorie_id INTEGER, enveloppe_id INTEGER, FOREIGN KEY(compte_id) REFERENCES comptes(id), FOREIGN KEY(categorie_id) REFERENCES categories(id), FOREIGN KEY(enveloppe_id) REFERENCES enveloppes(id))")
+        
+        # Mise à jour sécurisée de la table transactions si la colonne n'existe pas encore
+        try:
+            cursor.execute("ALTER TABLE transactions ADD COLUMN enveloppe_id INTEGER REFERENCES enveloppes(id)")
+        except Exception:
+            pass
+
         cursor.execute("CREATE TABLE IF NOT EXISTS config (cle TEXT PRIMARY KEY, valeur TEXT)")
         
-        # Tables pour l'architecture des sous-comptes virtuels
+        cursor.execute("CREATE TABLE IF NOT EXISTS enveloppes (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT UNIQUE, compte_id INTEGER, objectif REAL, FOREIGN KEY(compte_id) REFERENCES comptes(id))")
+        cursor.execute("CREATE TABLE IF NOT EXISTS provisions (id INTEGER PRIMARY KEY AUTOINCREMENT, enveloppe_id INTEGER, date TEXT, montant REAL, FOREIGN KEY(enveloppe_id) REFERENCES enveloppes(id))")
+        cursor.execute("CREATE TABLE IF NOT EXISTS regles_recurrentes (id INTEGER PRIMARY KEY AUTOINCREMENT, enveloppe_id INTEGER, montant REAL, prochaine_date TEXT, FOREIGN KEY(enveloppe_id) REFERENCES enveloppes(id))")
+        
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS enveloppes (
+            CREATE TABLE IF NOT EXISTS abonnements (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nom TEXT UNIQUE,
+                libelle TEXT,
+                montant REAL,
+                frequence TEXT,
                 compte_id INTEGER,
-                objectif REAL,
-                FOREIGN KEY(compte_id) REFERENCES comptes(id)
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS provisions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                enveloppe_id INTEGER,
-                date TEXT,
-                montant REAL,
-                FOREIGN KEY(enveloppe_id) REFERENCES enveloppes(id)
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS regles_recurrentes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                enveloppe_id INTEGER,
-                montant REAL,
-                prochaine_date TEXT,
-                FOREIGN KEY(enveloppe_id) REFERENCES enveloppes(id)
+                categorie_id INTEGER,
+                FOREIGN KEY(compte_id) REFERENCES comptes(id),
+                FOREIGN KEY(categorie_id) REFERENCES categories(id)
             )
         """)
 
